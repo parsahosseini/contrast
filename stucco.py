@@ -1,6 +1,5 @@
 import json
 import numpy as np
-import pandas as pd
 
 from itertools import combinations
 
@@ -34,6 +33,18 @@ def get_frame_metadata(frame, num_splits=3, max_unique_reals=15, out=None):
     """
     Derive the metadata for a pandas DataFrame. Metadata is defined as the
     data-type and data-range of a feature.
+
+    Args:
+        frame (DataFrame): pandas DataFrame.
+        num_splits (int): number of partitions to split-up continuous features.
+        max_unique_reals (int): max number of unique reals before deemed float.
+        out (file): output JSON filename to write metadata object to.
+
+    Raises:
+        ValueError: if `num_splits` is less than 1 or None
+
+    Returns:
+          dict: feature-metadata pairing, otherwise known as metadata.
     """
 
     # ensure the number of bins to split floats into is a valid integer
@@ -43,17 +54,19 @@ def get_frame_metadata(frame, num_splits=3, max_unique_reals=15, out=None):
     # store metadata given a DataFrame
     metadata = {}
 
-    # handle categorical data-points, i.e. category, boolean, and strings
+    # fetch discrete features data-types, get metadata, and save to dict
     subset = frame.select_dtypes(['category', 'bool', 'object'])
     for col_name in subset:
         values = subset[col_name].unique()
         record = {'items': values.tolist(), 'data_type': str(values.dtype)}
         metadata[col_name] = record
 
-    # handle real-data; too many points makes them continuous in-range
+    # fetch real-valued data-types, get metadata, and save to dict
     subset = frame.select_dtypes(['int', 'float'])
     for col_name in subset:
         values = subset[col_name].unique()
+
+        # some features are continuous, so partition and fetch boundary ranges
         if len(values) > max_unique_reals:
             splits = np.array_split(values, num_splits)
             values = np.asarray(list(map(lambda x: list(x[[0, -1]]), splits)))
@@ -62,3 +75,4 @@ def get_frame_metadata(frame, num_splits=3, max_unique_reals=15, out=None):
 
     if out:
         json.dump(metadata, open(out, 'w'), indent=4)
+    return metadata
