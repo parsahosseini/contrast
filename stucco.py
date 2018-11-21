@@ -80,3 +80,71 @@ def get_frame_metadata(frame, num_splits=3, max_unique_reals=15, **kwargs):
     if out_file:
         json.dump(metadata, open(out_file, 'w'), indent=4)
     return metadata
+
+
+def frame_to_items(frame, group_feature=None, max_num_items=None, **kwargs):
+    """
+    Parses DataFrame records as {column} := {value} format, where {column} is
+    the DataFrame feature, and {value} is its value. For continuous features,
+    (i.e. floats and ints), {value} is the upper- and lower-limits this numeric
+    value falls in-between. Applying such logic, for both continuous and
+    discrete features, helps in modeling feature-specific context and better
+    understanding of enriched association rules.
+
+    Args:
+        frame (DataFrame): pandas DataFrame.
+        group_feature (str): feature in `frame` to contrast rules against.
+        max_num_items (int): maximum number of items, or records, to parse.
+        kwargs (dict): Keyword arguments accepted by `get_frame_metadata`)
+
+    Raises:
+        ValueError: if `group_feature` in not a valid DataFrame column name.
+
+    Yields:
+        (list, str): items and its corresponding group feature (optional)
+    """
+
+    if group_feature and group_feature not in frame.columns:
+        raise ValueError("{} not in DataFrame".format(group_feature))
+
+    # derive the metadata for the DataFrame
+    metadata = get_frame_metadata(frame, **kwargs)
+
+    # iterate over each row in the DataFrame
+    for row_num, row in frame.iterrows():
+
+        items = []
+        group = None
+
+        # get feature and its value, and get data-type so right item is fetched
+        for col_name, value in list(row.items()):
+            data_type = np.dtype(metadata[col_name]['data_type'])
+
+            if data_type == np.object:
+                item = '{} := {}'.format(col_name, value)
+
+            elif data_type == np.float or np.int:
+                values = metadata[col_name]['values']
+                if np.ndim(values) == 1:
+                    item = '{} := {}'.format(col_name, value)
+                else:
+
+                    split = filter(lambda x: x[0] <= value <= x[-1], values)
+                    value = np.ravel(list(split))
+                    item = '{} := ({}...{})'.format(col_name, *value)
+
+            else:
+                msg = '{} must be numpy object, float, or int'.format(col_name)
+                raise TypeError(msg)
+
+            # set group feature if group is provided, otherwise append feature
+            if group_feature == col_name:
+                group = item
+            else:
+                items.append(item)
+
+        # break generation of items if so-many items have been generated
+        if max_num_items == row_num:
+            break
+
+        yield items, group
