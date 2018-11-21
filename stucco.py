@@ -29,7 +29,7 @@ def canonical_combination(items, max_length=None):
             break
 
 
-def get_frame_metadata(frame, num_splits=3, max_unique_reals=15, out=None):
+def get_frame_metadata(frame, num_splits=3, max_unique_reals=15, **kwargs):
     """
     Derive the metadata for a pandas DataFrame. Metadata is defined as the
     data-type and data-range of a feature.
@@ -38,6 +38,8 @@ def get_frame_metadata(frame, num_splits=3, max_unique_reals=15, out=None):
         frame (DataFrame): pandas DataFrame.
         num_splits (int): number of partitions to split-up continuous features.
         max_unique_reals (int): max number of unique reals before deemed float.
+
+    Keyword Args:
         out (file): output JSON filename to write metadata object to.
 
     Raises:
@@ -58,21 +60,23 @@ def get_frame_metadata(frame, num_splits=3, max_unique_reals=15, out=None):
     subset = frame.select_dtypes(['category', 'bool', 'object'])
     for col_name in subset:
         values = subset[col_name].unique()
-        record = {'items': values.tolist(), 'data_type': str(values.dtype)}
+        record = {'values': values.tolist(), 'data_type': str(values.dtype)}
         metadata[col_name] = record
 
     # fetch real-valued data-types, get metadata, and save to dict
     subset = frame.select_dtypes(['int', 'float'])
     for col_name in subset:
-        values = subset[col_name].unique()
+        values = subset[col_name].sort_values().unique()
 
         # some features are continuous, so partition and fetch boundary ranges
         if len(values) > max_unique_reals:
             splits = np.array_split(values, num_splits)
             values = np.asarray(list(map(lambda x: list(x[[0, -1]]), splits)))
-        record = {'items': values.tolist(), 'data_type': str(values.dtype)}
+        record = {'values': values.tolist(), 'data_type': str(values.dtype)}
         metadata[col_name] = record
 
-    if out:
-        json.dump(metadata, open(out, 'w'), indent=4)
+    # persist metadata object as JSON
+    out_file = kwargs.get('out')
+    if out_file:
+        json.dump(metadata, open(out_file, 'w'), indent=4)
     return metadata
