@@ -31,156 +31,46 @@ def canonical_combination(items, max_length=None):
             break
 
 
-def frame_to_items(frame, max_num_items=None, **kwargs):
+class ContrastSetLearner:
     """
-    Parses DataFrame records as {column} := {value} format, where {column} is
-    the DataFrame feature, and {value} is its value. For continuous features,
-    (i.e. floats and ints), {value} is the upper- and lower-limits this numeric
-    value falls in-between. Applying such logic, for both continuous and
-    discrete features, helps in modeling feature-specific context and better
-    understanding of enriched association rules.
+    Executes a data mining algorithm known as contrast-set learning. This
+    algorithm is designed to learn association rules that have a statistical
+    significant presence in one group over another. In doing so, this learning
+    algorithm enables identification of potential indicators that describe
+    differences across groups, for example: size = small versus size = large.
 
     Args:
         frame (DataFrame): pandas DataFrame.
-        group_feature (str): feature in `frame` to contrast rules against.
-        max_num_items (int): maximum number of items, or records, to parse.
-        kwargs (dict): Keyword arguments accepted by `get_frame_metadata`)
+        group_feature (str): feature name to drive contrast-set learning.
+        num_parts (int): number of partitions floats shall be split into.
+        max_unique_reals (int): number of unique reals to justify partitioning.
+        max_rows (int): maximum number of DataFrame records to process.
 
     Raises:
-        ValueError: if `group_feature` in not a valid DataFrame column name.
-
-    Yields:
-        (list, str): items and its corresponding group feature (optional)
+        ValueError: if `group_feature` does not exist or `num_parts` < 1.
     """
+    def __init__(self, frame, group_feature, num_parts=3, max_unique_reals=15,
+                 max_rows=None):
 
-    # derive the metadata for the DataFrame
-    metadata = get_frame_metadata(frame, **kwargs)
-
-    # each DataFrame row has a list of items and an optional group
-    for row_num, row in frame.iterrows():
-        items = []
-
-        # get feature and its value, and get data-type so right item is fetched
-        for col_name, value in list(row.items()):
-            data_type = np.dtype(metadata[col_name]['data_type'])
-
-            # if object, simply define the feature as the respective value
-            if data_type == np.object:
-                item = '{} := {}'.format(col_name, value)
-
-            # if real, its values could be a list or matrix
-            elif data_type == np.float or np.int:
-                values = metadata[col_name]['values']
-
-                # if list, define the feature as the respective value
-                if np.ndim(values) == 1:
-                    item = '{} := {}'.format(col_name, value)
-
-                # if array, define feature as the bounds the value falls in
-                else:
-                    split = filter(lambda x: x[0] <= value <= x[-1], values)
-                    value = np.ravel(list(split))
-                    item = '{} := ({}...{})'.format(col_name, *value)
-
-            else:
-                msg = '{} must be numpy object, float, or int'.format(col_name)
-                raise TypeError(msg)
-
-            items.append(item)
-
-        # break generation of items if so-many items have been generated
-        if max_num_items == row_num:
-            break
-
-        yield items
-
-
-def get_frame_metadata(frame, num_splits=3, max_unique_reals=15, **kwargs):
-    """
-    Derive the metadata for a pandas DataFrame. Metadata is defined as the
-    data-type and data-range of a feature.
-
-    Args:
-        num_splits (int): number of partitions to split continuous features.
-        max_unique_reals (int): number of unique reals before deemed float.
-
-    Keyword Args:
-        out (file): output JSON filename to write metadata object to.
-
-    Raises:
-        ValueError: if `num_splits` is less than 1 or None
-
-    Returns:
-          dict: feature-metadata pairing, otherwise known as metadata.
-    """
-
-    # ensure the number of bins to split floats into is a valid integer
-    if num_splits is None or num_splits < 1:
-        raise ValueError('`num_splits` must be a positive integer.')
-
-    # store metadata given a DataFrame
-    metadata = {}
-
-    # fetch discrete features data-types, get metadata, and save to dict
-    subset = frame.select_dtypes(['category', 'bool', 'object'])
-    frame[subset.columns] = frame[subset.columns].astype(object)
-
-    for col_name in subset:
-        values = subset[col_name].unique()
-        record = {'values': values.tolist(), 'data_type': str(values.dtype)}
-        metadata[col_name] = record
-
-    # fetch real-valued data-types, get metadata, and save to dict
-    subset = frame.select_dtypes(['int', 'float'])
-    for col_name in subset:
-        values = subset[col_name].sort_values().unique()
-
-        # some features are continuous, so partition and fetch boundary ranges
-        if len(values) > max_unique_reals:
-            splits = np.array_split(values, num_splits)
-            values = np.asarray(list(map(lambda x: list(x[[0, -1]]), splits)))
-        record = {'values': values.tolist(), 'data_type': str(values.dtype)}
-        metadata[col_name] = record
-
-    print(frame.dtypes)
-    # persist metadata object as JSON
-    out_file = kwargs.get('out')
-    if out_file:
-        json.dump(metadata, open(out_file, 'w'), indent=4)
-    return metadata
-
-
-def stucco(items_or_iterator, group_feature, max_rule_length=2):
-    for items in items_or_iterator:
-        pass
-
-        # check to see if `group_feature` exists in `items`; if its count != 1,
-        # then break.
-
-        # have dict; K => comb; V => {group label: its count}
-
-
-class ContrastSetLearner:
-    def __init__(self, frame, contrast_feature, num_parts=3,
-                 max_unique_reals=15):
-
-        if contrast_feature not in frame:
+        if group_feature not in frame:
             raise ValueError('`contrast_feature` must be a valid column name.')
 
         if num_parts < 1:
             raise ValueError('`num_parts` must be a positive number.')
 
-        # cast discrete features, i.e. categorical and boolean, as object
+        # if so-many rows are desired, select those-many rows
+        if max_rows:
+            frame = pd.DataFrame(frame.iloc[:max_rows])
+
+        # retrieve discrete features, i.e. categorical and boolean, as object
         subset = frame.select_dtypes(['category', 'bool', 'object'])
-        # frame[subset.columns] = frame[subset.columns].astype(np.object)
 
         # append the feature to its attribute, making it attribute := value
         for col in subset.columns:
             frame[col] = col + ' => ' + frame[col].astype(str)
 
-        # cast continuous features, i.e. float and int, as number
+        # retrieve continuous features, i.e. float and int, as number
         subset = frame.select_dtypes(['number'])
-        # frame[subset.columns] = frame[subset.columns].astype(np.number)
 
         # repeat the appending process above, but for real-values
         for col in subset.columns:
@@ -202,4 +92,16 @@ class ContrastSetLearner:
             # if numeric feature has few unique values, append it like object
             else:
                 frame[col] = col + ' => ' + frame[col].astype(str)
-        self.frame = frame
+
+        # get the contrast group, remove from frame, and make items as list
+        group_values = pd.Series(frame[group_feature], name='group')
+        frame.drop(group_feature, axis=1, inplace=True)
+        items = pd.Series(frame.apply(lambda x: tuple(x), axis=1), name='items')
+
+        # merge group values and items as DataFrame, and count their frequency
+        dummy_frame = pd.concat([group_values, items], axis=1)
+        counts = dummy_frame.groupby(list(dummy_frame.columns)).size()
+
+        # data is list containing the items, its group, and count
+        self.data = counts.reset_index(name='count').to_dict(orient='records')
+        self.group = list(group_values.unique())
