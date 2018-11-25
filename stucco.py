@@ -2,7 +2,7 @@ import json
 import numpy as np
 import pandas as pd
 
-from bisect import bisect_left, bisect_right, bisect
+from bisect import bisect_right
 from itertools import combinations
 
 
@@ -50,7 +50,7 @@ class ContrastSetLearner:
         ValueError: if `group_feature` does not exist or `num_parts` < 1.
     """
     def __init__(self, frame, group_feature, num_parts=3, max_unique_reals=15,
-                 max_rows=None):
+                 sep='=>', max_rows=None):
 
         if group_feature not in frame:
             raise ValueError('`contrast_feature` must be a valid column name.')
@@ -67,7 +67,7 @@ class ContrastSetLearner:
 
         # append the feature to its attribute, making it attribute := value
         for col in subset.columns:
-            frame[col] = col + ' => ' + frame[col].astype(str)
+            frame[col] = col + sep + frame[col].astype(str)
 
         # retrieve continuous features, i.e. float and int, as number
         subset = frame.select_dtypes(['number'])
@@ -87,14 +87,29 @@ class ContrastSetLearner:
 
                 # determine which (lower, upper) range this value falls into
                 series = series.apply(lambda x: values[bisect_right(lwr, x)-1])
-                frame[col] = col + ' => ' + series.astype(str)
+                frame[col] = col + sep + series.astype(str)
 
             # if numeric feature has few unique values, append it like object
             else:
-                frame[col] = col + ' => ' + frame[col].astype(str)
+                frame[col] = col + sep + frame[col].astype(str)
 
-        # get the contrast group, remove from frame, and make items as list
-        group_values = pd.Series(frame[group_feature], name='group')
+        # contrasting needs features, i.e. size, and its states, i.e. size => S
+        metadata = {}
+        for col in frame:
+
+            # add all the states pointing to their features to the metadata
+            states = list(frame[col].unique())
+            for ix, state in enumerate(states):
+                element = {state: {'pos': ix, 'feature': col}}
+                metadata.setdefault('states', {}).update(element)
+
+            # add all the features pointing to their states to the metadata
+            metadata.setdefault('features', {}).update({col: states})
+        metadata.update({'group_feature': group_feature})
+        self.metadata = metadata
+
+        # get the contrast group, remove from frame, and make items as one list
+        group_values = pd.Series(frame[group_feature])
         frame.drop(group_feature, axis=1, inplace=True)
         items = pd.Series(frame.apply(lambda x: tuple(x), axis=1), name='items')
 
@@ -104,4 +119,43 @@ class ContrastSetLearner:
 
         # data is list containing the items, its group, and count
         self.data = counts.reset_index(name='count').to_dict(orient='records')
-        self.group = list(group_values.unique())
+        self.group = group_feature  # feature to contrast, aka. column name
+        self.counts = None
+
+    def learn(self, max_length=3, max_records=None, shuffle=True,
+              min_support_count=3, seed=None):
+
+        if shuffle:
+            rng = np.random.RandomState(seed)
+            rng.shuffle(self.data)
+
+        if max_records:
+            self.data = self.data[:max_records]
+
+        # get number of states for the feature
+        self.counts = {}
+        num_states = len(self.metadata['features'][self.group])
+
+        # we intend, in this block, to compute counts for the rule across groups
+        for row_num, rec in enumerate(self.data):
+            state, items, count = rec[self.group], rec['items'],rec['count']
+
+            for rule in canonical_combination(items, max_length):
+                if rule not in self.counts:
+                    self.counts[rule] = np.zeros((2, num_states))
+
+                # update the rule (row 0) count given the column index of state
+                contingency_matrix = self.counts[rule]
+
+                # get columnar position of the group state and update matrix
+                pos = self.metadata['states'][state]['pos']
+                contingency_matrix[0][pos] += count
+
+        # remove low support-count contingency matrices as they are infrequent
+        for rule in list(self.counts):
+            if np.max(self.counts[rule]) <= min_support_count:
+                self.counts.pop(rule)
+
+        # can be thrown if `min_support_count` is too high
+        if len(self.counts) == 0:
+            raise ValueError('No rules left; add data or adjust arguments.')
