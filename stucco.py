@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 
 from bisect import bisect_right
-from itertools import combinations
+from itertools import combinations, product
 
 
 def canonical_combination(items, max_length=None):
@@ -159,3 +159,30 @@ class ContrastSetLearner:
         # can be thrown if `min_support_count` is too high
         if len(self.counts) == 0:
             raise ValueError('No rules left; add data or adjust arguments.')
+
+    def get_rule_negations(self, rule):
+        if not isinstance(rule, tuple) or not len(rule) > 0:
+            msg = '`rule` must be tuple; see `self.counts` keys for examples.'
+            raise ValueError(msg)
+
+        # stores all not-components, i.e. [size = S, size = L], [height = tall]
+        iterables = []
+
+        # for each rule component, fetch its feature, and get all other states
+        for component in rule:
+
+            # only rules in the metadata, under states key, are accepted
+            if component not in self.metadata['states']:
+                raise KeyError(component + " is an invalid rule; see metadata.")
+
+            # fetch the feature given the desired state, or component
+            feature = self.metadata['states'][component]['feature']
+            all_components = self.metadata['features'][feature]
+
+            # remove the rule component, leaving only not-components
+            all_components.remove(component)
+            iterables.append(all_components)
+
+        # compute negations, i.e. ['a'], ['X', 'Y'] = ['a', 'X'], ['a', 'Y']
+        negations = list(product(*iterables))
+        return negations
