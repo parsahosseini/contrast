@@ -1,4 +1,3 @@
-import json
 import numpy as np
 import pandas as pd
 
@@ -29,6 +28,22 @@ def canonical_combination(items, max_length=None):
             yield subset
         if length == max_length:
             break
+
+
+def lift(arr):
+    total = arr.sum(dtype=float)
+    numerator = support(arr)
+    denominator = (arr[0, :].sum() / total) * (arr[:, 0].sum() / total)
+    return numerator / denominator
+
+
+def support(arr):
+    return arr[0][0] / arr.sum(dtype=float)
+
+
+def confidence(arr):
+    count = arr[0, 0]
+    return max(count / arr[0, :].sum(), count / arr[:, 0].sum())
 
 
 class ContrastSetLearner:
@@ -158,18 +173,31 @@ class ContrastSetLearner:
 
             # given rule, compute all not-rules possibilities
             rule_negations = self.get_rule_negations(rule)
-            rule_counts = self.counts[rule]
 
             # for each not-rule, fetch its counts and add to not-rule (row 1)
             for rule_negated in rule_negations:
                 if rule_negated in self.counts:
                     rule_negated_count = self.counts[rule_negated][0]
-                    rule_counts[1] += rule_negated_count
+                    self.counts[rule][1] += rule_negated_count
 
         # serves as an upper-bound for how many rules there could be
         return len(self.counts)
 
     def get_rule_negations(self, rule):
+        """
+        Derives all possible negations given a user-provided rule. Here, a rule
+        is referred to as a key in the `counts` state; a tuple that references
+        an item. An example of a possible could is "(size => S,)", where "size"
+        is the feature and "S" is its value. If possible values for "size" are
+        "S", "M", and "L", then negations of "(size => S,)" would simply be
+        [(size => M,), (size => L,)].
+
+        Args:
+            rule (tuple): A valid rule; must be found as key in `self.counts`.
+
+        Returns:
+            list: All possible rule negations.
+        """
         if not isinstance(rule, tuple) or not len(rule) > 0:
             msg = '`rule` must be tuple; see `self.counts` keys for examples.'
             raise ValueError(msg)
@@ -192,13 +220,58 @@ class ContrastSetLearner:
             all_components.remove(component)
             iterables.append(all_components)
 
-        # compute negations, i.e. ['a'], ['X', 'Y'] = ['a', 'X'], ['a', 'Y']
+        # compute negation-combinations
         negations = list(product(*iterables))
         return negations
 
-    def score(self, min_support_count=3, min_difference=2):
+    def score(self, min_support=0.1, min_support_count=10, min_difference=2,
+              min_lift=2.0, min_confidence=0.75):
+
+        # read the metadata and map group-states to their column number
+        states = self.metadata['features'][self.group]
+        state_positions = {self.metadata['states'][s]['pos']: s for s in states}
+
+        # for storing all the statistically significant rules
+        data = []
 
         # remove low support-count contingency matrices as they are infrequent
-        for i, rule in enumerate(list(self.counts)):
-            if np.max(self.counts[rule]) <= min_support_count:
-                self.counts.pop(rule)
+        for rule in list(self.counts):
+            contingency_matrix = self.counts[rule]
+
+            for col_num in range(np.shape(contingency_matrix)[1]):
+                this_column = contingency_matrix[:, col_num][:, np.newaxis]
+                not_columns = np.delete(contingency_matrix, col_num, axis=1)
+
+                not_column_sum = not_columns.sum(axis=1)[:, np.newaxis]
+                two_by_two = np.hstack((this_column, not_column_sum))
+
+                # skip if rule difference across groups is not large
+                if abs(np.subtract(*two_by_two[0])) <= min_difference:
+                    continue
+
+                # if the rule, in the group, is infrequent, continue on
+                if two_by_two[0][0] <= min_support_count:
+                    continue
+
+                # index (1, 0) if 0, throws chi-squared exception, so set as 1
+                if two_by_two[1][0] == 0:
+                    two_by_two[1][0] = 1
+
+                support_out = support(two_by_two)
+                lift_out = lift(two_by_two)
+                conf_out = confidence(two_by_two)
+
+                conditions = [support_out > min_support,
+                              conf_out > min_confidence,
+                              lift_out > min_lift]
+
+                if all(conditions):
+                    group = state_positions[col_num]
+                    row = {'rule': rule, 'group': group, 'lift': lift_out}
+                    data.append(row)
+
+        # save the resulting rules to a DataFrame and sort by lift
+        frame = pd.DataFrame(data)
+        if len(frame) > 0:
+            frame.sort_values('lift', ascending=False, inplace=True)
+        return frame
