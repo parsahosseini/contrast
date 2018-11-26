@@ -120,10 +120,9 @@ class ContrastSetLearner:
         # data is list containing the items, its group, and count
         self.data = counts.reset_index(name='count').to_dict(orient='records')
         self.group = group_feature  # feature to contrast, aka. column name
-        self.counts = None
+        self.counts = {}
 
-    def learn(self, max_length=3, max_records=None, shuffle=True,
-              min_support_count=3, seed=None):
+    def learn(self, max_length=3, max_records=None, shuffle=True, seed=None):
 
         if shuffle:
             rng = np.random.RandomState(seed)
@@ -133,7 +132,6 @@ class ContrastSetLearner:
             self.data = self.data[:max_records]
 
         # get number of states for the feature
-        self.counts = {}
         num_states = len(self.metadata['features'][self.group])
 
         # we intend, in this block, to compute counts for the rule across groups
@@ -151,14 +149,25 @@ class ContrastSetLearner:
                 pos = self.metadata['states'][state]['pos']
                 contingency_matrix[0][pos] += count
 
-        # remove low support-count contingency matrices as they are infrequent
-        for rule in list(self.counts):
-            if np.max(self.counts[rule]) <= min_support_count:
-                self.counts.pop(rule)
-
         # can be thrown if `min_support_count` is too high
         if len(self.counts) == 0:
             raise ValueError('No rules left; add data or adjust arguments.')
+
+        # compute the counts for the not-rule
+        for rule in self.counts:
+
+            # given rule, compute all not-rules possibilities
+            rule_negations = self.get_rule_negations(rule)
+            rule_counts = self.counts[rule]
+
+            # for each not-rule, fetch its counts and add to not-rule (row 1)
+            for rule_negated in rule_negations:
+                if rule_negated in self.counts:
+                    rule_negated_count = self.counts[rule_negated][0]
+                    rule_counts[1] += rule_negated_count
+
+        # serves as an upper-bound for how many rules there could be
+        return len(self.counts)
 
     def get_rule_negations(self, rule):
         if not isinstance(rule, tuple) or not len(rule) > 0:
@@ -177,7 +186,7 @@ class ContrastSetLearner:
 
             # fetch the feature given the desired state, or component
             feature = self.metadata['states'][component]['feature']
-            all_components = self.metadata['features'][feature]
+            all_components = list(self.metadata['features'][feature])
 
             # remove the rule component, leaving only not-components
             all_components.remove(component)
@@ -186,3 +195,10 @@ class ContrastSetLearner:
         # compute negations, i.e. ['a'], ['X', 'Y'] = ['a', 'X'], ['a', 'Y']
         negations = list(product(*iterables))
         return negations
+
+    def score(self, min_support_count=3, min_difference=2):
+
+        # remove low support-count contingency matrices as they are infrequent
+        for i, rule in enumerate(list(self.counts)):
+            if np.max(self.counts[rule]) <= min_support_count:
+                self.counts.pop(rule)
