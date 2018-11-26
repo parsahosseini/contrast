@@ -1,3 +1,11 @@
+"""
+Demonstrates the ability to execute Contrast-Set Learning using the STUCCO
+algorithm. This algorithm works by deriving association rules that exhibit
+statistical deviations across varying groups, for example "empty" vs "full".
+Resultant association rules, enriched in one group over another, can thus be
+used to elucidate or shed-light on an underlying group-specific lexicon.
+"""
+
 import numpy as np
 import pandas as pd
 
@@ -31,6 +39,15 @@ def canonical_combination(items, max_length=None):
 
 
 def lift(arr):
+    """
+    Computes the lift given a 2x2 contingency matrix
+
+    Args:
+        arr (ndarray): NumPy array.
+
+    Returns:
+        float: lift score; ranges from 0 to infinity.
+    """
     total = arr.sum(dtype=float)
     numerator = support(arr)
     denominator = (arr[0, :].sum() / total) * (arr[:, 0].sum() / total)
@@ -38,10 +55,28 @@ def lift(arr):
 
 
 def support(arr):
+    """
+    Computes the support of a 2x2 contingency matrix
+
+    Args:
+        arr (ndarray): NumPy array.
+
+    Returns:
+        float: support score; ranges from 0 to 1.
+    """
     return arr[0][0] / arr.sum(dtype=float)
 
 
 def confidence(arr):
+    """
+    Computes the confidence of a 2x2 contingency matrix
+
+    Args:
+        arr (ndarray): NumPy array.
+
+    Returns:
+        float: confidence score; ranges from 0 to 1.
+    """
     count = arr[0, 0]
     return max(count / arr[0, :].sum(), count / arr[:, 0].sum())
 
@@ -138,6 +173,20 @@ class ContrastSetLearner:
         self.counts = {}
 
     def learn(self, max_length=3, max_records=None, shuffle=True, seed=None):
+        """
+        Produces a data-structure that references rule counts across all
+        possible groups. Such logic is also applied to the not-rule, allowing
+        for the ability to effectively contrast a rule across other groups.
+
+        Args:
+            max_length (int): maximum length for a canonical combination.
+            max_records (int): maximum number of `self.data` records to parse.
+            shuffle (bool): whether to shuffle data in `self.data`.
+            seed (int): random number seed for-use in shuffling.
+
+        Returns:
+            int: number of rules that were generated
+        """
 
         if shuffle:
             rng = np.random.RandomState(seed)
@@ -226,6 +275,25 @@ class ContrastSetLearner:
 
     def score(self, min_support=0.1, min_support_count=10, min_difference=2,
               min_lift=2.0, min_confidence=0.75):
+        """
+        Quantify the rules, and its contingency matrix, using a set of
+        statistical metrics. How such quantification works is broken into two
+        stages: A) the counts for the rule are isolated, and B) the counts for
+        the not-rule are isolated. Row-wise sums for said-counts are then
+        derived and concatenated into a 2 x 2 contingency matrix. Such matrices
+        that exceed user-provided minimum cutoffs, i.e. support, lift, etc.,
+        are modeled in a pandas DataFrame.
+
+        Args:
+            min_support (float): minimum-allowable support; a proportion.
+            min_support_count (int): minimum count for the rule in the group.
+            min_difference (int): minimum difference of rule count over groups.
+            min_lift (float): minimum-allowable lift value.
+            min_confidence (float): minimum-allowable confidence value.
+
+        Returns:
+            DataFrame: rules and groups that pass user-provided cutoffs.
+        """
 
         # read the metadata and map group-states to their column number
         states = self.metadata['features'][self.group]
@@ -234,15 +302,19 @@ class ContrastSetLearner:
         # for storing all the statistically significant rules
         data = []
 
-        # remove low support-count contingency matrices as they are infrequent
+        # iterate over all rules and their contingency matrix
         for rule in list(self.counts):
             contingency_matrix = self.counts[rule]
 
+            # for each group (column), extract-out all other columns
             for col_num in range(np.shape(contingency_matrix)[1]):
                 this_column = contingency_matrix[:, col_num][:, np.newaxis]
                 not_columns = np.delete(contingency_matrix, col_num, axis=1)
 
+                # compute the row-wise sum for the not-columns
                 not_column_sum = not_columns.sum(axis=1)[:, np.newaxis]
+
+                # join current and not-columns to give 2 x 2 contingency matrix
                 two_by_two = np.hstack((this_column, not_column_sum))
 
                 # skip if rule difference across groups is not large
@@ -253,18 +325,17 @@ class ContrastSetLearner:
                 if two_by_two[0][0] <= min_support_count:
                     continue
 
-                # index (1, 0) if 0, throws chi-squared exception, so set as 1
-                if two_by_two[1][0] == 0:
-                    two_by_two[1][0] = 1
-
+                # fetch the actual statistical metric outputs
                 support_out = support(two_by_two)
                 lift_out = lift(two_by_two)
                 conf_out = confidence(two_by_two)
 
+                # assert the statistical outputs exceed the cutoffs
                 conditions = [support_out > min_support,
                               conf_out > min_confidence,
                               lift_out > min_lift]
 
+                # append good rules, and its group, to what will be a DataFrame
                 if all(conditions):
                     group = state_positions[col_num]
                     row = {'rule': rule, 'group': group, 'lift': lift_out}
