@@ -26,9 +26,9 @@ from seaborn import load_dataset
 frame = load_dataset('diamonds')
 ```
 
-To execute contrast-set learning, using the STUCCO algorithm, we can leverage
-the `ContrastSetLearner` class. Each such object requires a pandas DataFrame, 
-`frame`, and a feature where rules will be contrasted against.
+To execute STUCCO contrast-set learning, we can leverage
+the `ContrastSetLearner` class. Each such object requires a pandas `DataFrame` 
+and a column name or feature, `group_feature`, where rules will be contrasted against.
 
 ```python
 # a skeleton object; no contrast-set analysis has taken place.
@@ -36,33 +36,44 @@ from stucco import ContrastSetLearner
 learner = ContrastSetLearner(frame, group_feature='color')
 ```
 
-Our feature may have many states, i.e. `('color' == 'D', 'color' == 'E'`. As
-a result, the goal of contrast-set learning is to derive which association
-rules are enriched in one group-state over another. To make
-this happen, we have to quantify rule abundance. 
+Our feature of interest is merely a column name in our frame, however it
+may have many states, i.e. `('color' == 'D', 'color' == 'E')`. The ultimate
+goal of contrast-set learning is to gauge what rules are enriched in which 
+states. To make this happen, we invoke `learner.learn()` which is capable
+of enumerating rule abundance across each state. 
 
-*Recommendations*
+*Considerations*
 
 We recommend experimenting with `learner.learn()` parameter arguments, namely
-`max_length`. This parameter references the maximum length of an item-set
-following derivation of its canonical combinations. In other words, the smaller
-this length, the fewer rules will be learned. On the other hand, the higher 
-this value, the longer the rules shall be; we recommend executing with
-at least `max_length = 2`, and adjusting accordingly.
+`max_length`. This parameter is the maximum length of a rule
+following derivation of its canonical combinations. For example: suppose we 
+have the array `x = ['a', 'b', 'c']`. Setting `max_length=2` would give all
+combinations of at least this length, or more formally `['a', 'b', 'c', ('a', 'b'), 
+('a', 'c'), ('b', 'c')]`. Thus, a large `max_length` increases runtime but 
+produces high-resolution rules. 
+
 
 ```python
 # process how many times each rule is found in each group-state.
-learner.learn()
+learner.learn(max_length=3)
 ```
 
 Extracting association rules enriched across an exclusive set of groups
-is the next phase in contrast-set learning. Here, statistical metrics are 
-leveraged capable of assessing rule abundance in one group over another.
-Such metrics include:
+is the next phase in contrast-set learning. Here, rule abundance across groups
+is modeled as a 2 x 2 contingency matrix made of our rule, `A`, and a group 
+state, `B`. We denote "not" symbol as `~`:
 
+```python
+|    | B        | ~B        |
+|----|----------|-----------|
+| A  | p(A, B)  | p(A, ~B)  |
+| ~A | p(~A, B) | p(~A, ~B) |
+```
+
+Given our symbol representation, we denote our statistical metrics:
 * Support `p(A, B)`
 * Lift `p(A, B) / p(A) * p(B)`
-* Confidence `max((p(A, B) / p(A)), (p(A, B) / p(B)))`
+* Confidence `max(p(A, B) / p(A), p(A, B) / p(B))`
 
 Such metrics are leveraged in `learner.score()`, with parameters to accept
 to accept argument values for the metrics. The end result, `output`, is a
