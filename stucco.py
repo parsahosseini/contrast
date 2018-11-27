@@ -6,12 +6,16 @@ Resultant association rules, enriched in one group over another, can thus be
 used to elucidate or shed-light on an underlying group-specific lexicon.
 """
 
-import json
+import logging
 import numpy as np
 import pandas as pd
 
 from bisect import bisect_right
 from itertools import combinations, product
+
+# module-wide logging
+logging.basicConfig(level=logging.INFO)
+logging.getLogger(__name__)
 
 
 def canonical_combination(items, max_length=None):
@@ -99,16 +103,21 @@ class ContrastSetLearner:
         max_rows (int): maximum number of DataFrame records to process.
 
     Raises:
-        ValueError: if `group_feature` does not exist or `num_parts` < 1.
+        KeyError: if `group_feature` does not exist as a valid feature name.
     """
     def __init__(self, frame, group_feature, num_parts=3, max_unique_reals=15,
                  sep='=>', drop_singleton_features=True, max_rows=None):
 
-        if group_feature not in frame:
-            raise ValueError('`contrast_feature` must be a valid column name.')
+        try:
+            frame[group_feature]
+            logging.info("Feature set to {}".format(group_feature))
+        except KeyError:
+            logging.error("`group_feature` must be a valid feature name.")
+            raise
 
         if num_parts < 1:
-            raise ValueError('`num_parts` must be a positive number.')
+            logging.warning("`num_parts` must be >= 1; setting so.")
+            num_parts = 1
 
         # if so-many rows are desired, select those-many rows
         if max_rows:
@@ -118,9 +127,11 @@ class ContrastSetLearner:
         if drop_singleton_features:
             drop_cols = [col for col in frame if len(frame[col].unique()) == 1]
             frame.drop(drop_cols, inplace=True, axis=1)
+            logging.info("Dropped singletons; {} remain".format(frame.shape[1]))
 
         # retrieve discrete features, i.e. categorical and boolean, as object
         subset = frame.select_dtypes(['category', 'bool', 'object'])
+        logging.debug('Reading object features (n={})'.format(subset.shape[1]))
 
         # append the feature to its attribute, making it attribute := value
         for col in subset.columns:
@@ -128,6 +139,7 @@ class ContrastSetLearner:
 
         # retrieve continuous features, i.e. float and int, as number
         subset = frame.select_dtypes(['number'])
+        logging.debug('Reading numeric features (n={})'.format(subset.shape[1]))
 
         # repeat the appending process above, but for real-values
         for col in subset.columns:
@@ -150,12 +162,14 @@ class ContrastSetLearner:
                 # determine which (lower, upper) range this value falls into
                 series = series.apply(lambda x: values[bisect_right(lwr, x)-1])
                 frame[col] = col + sep + series.astype(str)
+                logging.debug('{} is continuous; parts: {}'.format(col, values))
 
             # if numeric feature has few unique values, append it like object
             else:
                 frame[col] = col + sep + frame[col].astype(str)
 
         # contrasting needs features, i.e. size, and its states, i.e. size => S
+        logging.info('Creating metadata data-structure')
         metadata = {}
         for col in frame:
 
@@ -171,6 +185,7 @@ class ContrastSetLearner:
         self.metadata = metadata
 
         # get the contrast group, remove from frame, and make items as one list
+        logging.info('Number of records (pre-index): {}'.format(len(frame)))
         group_values = pd.Series(frame[group_feature])
         frame.drop(group_feature, axis=1, inplace=True)
         items = pd.Series(frame.apply(lambda x: tuple(x), axis=1), name='items')
@@ -178,6 +193,7 @@ class ContrastSetLearner:
         # merge group values and items as DataFrame, and count their frequency
         dummy_frame = pd.concat([group_values, items], axis=1)
         counts = dummy_frame.groupby(list(dummy_frame.columns)).size()
+        logging.info('Number of records (post-index): {}'.format(len(counts)))
 
         # data is list containing the items, its group, and count
         self.data = counts.reset_index(name='count').to_dict(orient='records')
@@ -358,3 +374,8 @@ class ContrastSetLearner:
         if len(frame) > 0:
             frame.sort_values('lift', ascending=False, inplace=True)
         return frame
+
+
+from seaborn import load_dataset
+frame = load_dataset('titanic')
+csl = ContrastSetLearner(frame, 'sibsp')
