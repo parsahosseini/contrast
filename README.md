@@ -59,19 +59,17 @@ learner.learn(max_length=3)
 ```
 
 Extracting association rules enriched across an exclusive set of groups
-is the next phase in contrast-set learning. Here, rule abundance across groups
-is modeled as a 2 x 2 contingency matrix made of our rule, `A`, and a group 
+is the goal of contrast-set learning. To make this possible, rule abundance across groups
+is modeled as a 2 x 2 contingency matrix. In this matrix, we model our rule, `A`, and its group 
 state, `B`. We denote "not" symbol as `~`:
 
-```markdown
-| B | ~B |
-|:--- |     :---:      |          ---: |
-| A   | p(A, B)     | p(A, ~B)    |
-| ~A  | p(~A, B)    | p(~A, ~B)      |
-```
+Matrix| B       |    ~B     |
+:---: | :---:   |   :---:   |
+A     | p(A, B) | p(A, ~B)  |
+~A    | p(~A, B)| p(~A, ~B) |
 
 
-Given our symbol representation, we denote our statistical metrics:
+Given our matrix, we can now represent our statistical metrics:
 * Support `p(A, B)`
 * Lift `p(A, B) / p(A) * p(B)`
 * Confidence `max(p(A, B) / p(A), p(A, B) / p(B))`
@@ -84,10 +82,10 @@ pandas `DataFrame` that references the rule, its group, and its lift score.
 output = learner.score(min_lift=3)
 ```
 
-*Recommendations*
+*Considerations*
 
 Increasing `learner.score()` parameter arguments renders scoring to be more
-stringent, and thus returns fewer intelligible rules. We recommend 
+stringent, and thus returns fewer intelligible rules. Therefore, we recommend 
 experimenting with such parameter-values, namely `min_lift` and `min_support`.
 
 [1]: https://www.ics.uci.edu/~pazzani/Publications/stucco.pdf
