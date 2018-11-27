@@ -6,6 +6,7 @@ Resultant association rules, enriched in one group over another, can thus be
 used to elucidate or shed-light on an underlying group-specific lexicon.
 """
 
+import json
 import numpy as np
 import pandas as pd
 
@@ -94,13 +95,14 @@ class ContrastSetLearner:
         group_feature (str): feature name to drive contrast-set learning.
         num_parts (int): number of partitions floats shall be split into.
         max_unique_reals (int): number of unique reals to justify partitioning.
+        drop_singleton_features (bool): drop features with one unique value.
         max_rows (int): maximum number of DataFrame records to process.
 
     Raises:
         ValueError: if `group_feature` does not exist or `num_parts` < 1.
     """
     def __init__(self, frame, group_feature, num_parts=3, max_unique_reals=15,
-                 sep='=>', max_rows=None):
+                 sep='=>', drop_singleton_features=True, max_rows=None):
 
         if group_feature not in frame:
             raise ValueError('`contrast_feature` must be a valid column name.')
@@ -111,6 +113,11 @@ class ContrastSetLearner:
         # if so-many rows are desired, select those-many rows
         if max_rows:
             frame = pd.DataFrame(frame.iloc[:max_rows])
+
+        # drop features which only have one value as they have any information
+        if drop_singleton_features:
+            drop_cols = [col for col in frame if len(frame[col].unique()) == 1]
+            frame.drop(drop_cols, inplace=True, axis=1)
 
         # retrieve discrete features, i.e. categorical and boolean, as object
         subset = frame.select_dtypes(['category', 'bool', 'object'])
@@ -129,7 +136,12 @@ class ContrastSetLearner:
             # if numeric feature has many unique values, partition into chunks
             if len(set(series)) > max_unique_reals:
                 arr = series.sort_values().unique()
-                parts = np.array_split(arr, num_parts)
+
+                # if there are so-few unique places, only make 1 partition
+                if len(arr) <= num_parts:
+                    parts = np.array_split(arr, 1)
+                else:
+                    parts = np.array_split(arr, num_parts)  # what you'd want
 
                 # partitions have (lower, upper) value; use lower to get index
                 values = list(map(lambda x: (x[0], x[-1]), parts))
@@ -155,7 +167,7 @@ class ContrastSetLearner:
 
             # add all the features pointing to their states to the metadata
             metadata.setdefault('features', {}).update({col: states})
-        metadata.update({'group_feature': group_feature})
+        metadata.update({'group_feature': group_feature, 'shape': frame.shape})
         self.metadata = metadata
 
         # get the contrast group, remove from frame, and make items as one list
