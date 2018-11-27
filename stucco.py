@@ -6,6 +6,7 @@ Resultant association rules, enriched in one group over another, can thus be
 used to elucidate or shed-light on an underlying group-specific lexicon.
 """
 
+import os
 import logging
 import numpy as np
 import pandas as pd
@@ -86,6 +87,38 @@ def confidence(arr):
     return max(count / arr[0, :].sum(), count / arr[:, 0].sum())
 
 
+def read_parquet(folder, max_files=None):
+    """
+    Bulk ingestion of .parquet files in a user-provided folder.
+
+    Args:
+        folder (str): folder containing .parquet files.
+        max_files (int): the maximum number of .parquet files to ingest.
+
+    Returns:
+        DataFrame: concatenation of all .parquet files into a pandas DataFrame.
+    """
+    contents = os.listdir(folder)
+    qualified_paths = list(map(lambda x: os.path.join(folder, x), contents))
+
+    # for all files, read only .parquet files until desired amount is reached.
+    data = []
+    for file in qualified_paths:
+        ext = os.path.splitext(file)[1]
+        if ext == '.parquet':
+            frame = pd.read_parquet(file)
+
+            # break file ingestion when so-many files are read-in
+            if len(data) < max_files:
+                data.append(frame)
+            else:
+                break
+
+    # return output as a pandas DataFrame.
+    output = pd.concat(data)
+    return output
+
+
 class ContrastSetLearner:
     """
     Executes a data mining algorithm known as contrast-set learning. This
@@ -106,9 +139,10 @@ class ContrastSetLearner:
         KeyError: if `group_feature` does not exist as a valid feature name.
     """
     def __init__(self, frame, group_feature, num_parts=3, max_unique_reals=15,
-                 sep='=>', drop_singleton_features=True, max_rows=None):
+                 sep='=>', max_rows=None):
 
         try:
+            # test that the group feature exists as a column
             frame[group_feature]
             logging.info("Feature set to {}".format(group_feature))
         except KeyError:
@@ -123,35 +157,41 @@ class ContrastSetLearner:
         if max_rows:
             frame = pd.DataFrame(frame.iloc[:max_rows])
 
-        # drop features which only have one value as they have any information
-        if drop_singleton_features:
-            drop_cols = [col for col in frame if len(frame[col].unique()) == 1]
-            frame.drop(drop_cols, inplace=True, axis=1)
-            logging.info("Dropped singletons; {} remain".format(frame.shape[1]))
-
         # retrieve discrete features, i.e. categorical and boolean, as object
         subset = frame.select_dtypes(['category', 'bool', 'object'])
-        logging.debug('Reading object features (n={})'.format(subset.shape[1]))
+        logging.info('Reading object features (n={})'.format(subset.shape[1]))
 
         # append the feature to its attribute, making it attribute := value
+        bad_cols = []
         for col in subset.columns:
-            frame[col] = col + sep + frame[col].astype(str)
+
+            # remove all features which only have one value; low quality
+            if len(subset[col].unique()) == 1:
+                bad_cols.append(col)
+                continue
+            frame[col] = col + sep + subset[col].astype(str)
 
         # retrieve continuous features, i.e. float and int, as number
         subset = frame.select_dtypes(['number'])
-        logging.debug('Reading numeric features (n={})'.format(subset.shape[1]))
+        subset = subset.fillna(0)
 
         # repeat the appending process above, but for real-values
+        logging.info('Reading numeric features (n={})'.format(subset.shape[1]))
         for col in subset.columns:
-            series = frame[col]
+            series = subset[col]
+            arr = series.sort_values().unique()
+
+            # remove all features which only have one value; low quality
+            if len(arr) == 1:
+                bad_cols.append(col)
+                continue
 
             # if numeric feature has many unique values, partition into chunks
-            if len(set(series)) > max_unique_reals:
-                arr = series.sort_values().unique()
+            if len(arr) > max_unique_reals:
 
                 # if there are so-few unique places, only make 1 partition
                 if len(arr) <= num_parts:
-                    parts = np.array_split(arr, 1)
+                    parts = np.array_split(arr, 1)  # make one partition
                 else:
                     parts = np.array_split(arr, num_parts)  # what you'd want
 
@@ -162,15 +202,15 @@ class ContrastSetLearner:
                 # determine which (lower, upper) range this value falls into
                 series = series.apply(lambda x: values[bisect_right(lwr, x)-1])
                 frame[col] = col + sep + series.astype(str)
-                logging.debug('{} is continuous; parts: {}'.format(col, values))
+                logging.info('{} is continuous; parts: {}'.format(col, values))
 
             # if numeric feature has few unique values, append it like object
             else:
-                frame[col] = col + sep + frame[col].astype(str)
+                frame[col] = col + sep + subset[col].astype(str)
 
-        # contrasting needs features, i.e. size, and its states, i.e. size => S
-        logging.info('Creating metadata data-structure')
+        logging.info('Dropping low-quality features and creating metadata')
         metadata = {}
+        frame.drop(bad_cols, axis=1, inplace=True)
         for col in frame:
 
             # add all the states pointing to their features to the metadata
@@ -194,6 +234,8 @@ class ContrastSetLearner:
         dummy_frame = pd.concat([group_values, items], axis=1)
         counts = dummy_frame.groupby(list(dummy_frame.columns)).size()
         logging.info('Number of records (post-index): {}'.format(len(counts)))
+
+        # print(counts)
 
         # data is list containing the items, its group, and count
         self.data = counts.reset_index(name='count').to_dict(orient='records')
@@ -227,10 +269,13 @@ class ContrastSetLearner:
         num_states = len(self.metadata['features'][self.group])
 
         # we intend, in this block, to compute counts for the rule across groups
+        logging.info('Enumerating rules across group-states...')
         for row_num, rec in enumerate(self.data):
             state, items, count = rec[self.group], rec['items'],rec['count']
+            logging.debug("Item-set record {}: {}".format(row_num, items))
 
             for rule in canonical_combination(items, max_length):
+                logging.debug('Rule and state: {}, {}'.format(rule, state))
                 if rule not in self.counts:
                     self.counts[rule] = np.zeros((2, num_states))
 
@@ -241,15 +286,13 @@ class ContrastSetLearner:
                 pos = self.metadata['states'][state]['pos']
                 contingency_matrix[0][pos] += count
 
-        # can be thrown if `min_support_count` is too high
-        if len(self.counts) == 0:
-            raise ValueError('No rules left; add data or adjust arguments.')
-
         # compute the counts for the not-rule
+        logging.info('Enumerating not-rules across group-states...')
         for rule in self.counts:
 
             # given rule, compute all not-rules possibilities
             rule_negations = self.get_rule_negations(rule)
+            logging.debug('{} negations are {}'.format(rule, rule_negations))
 
             # for each not-rule, fetch its counts and add to not-rule (row 1)
             for rule_negated in rule_negations:
@@ -376,6 +419,14 @@ class ContrastSetLearner:
         return frame
 
 
-from seaborn import load_dataset
-frame = load_dataset('titanic')
-csl = ContrastSetLearner(frame, 'sibsp')
+folder = '/Users/parsahosseini/data/'
+frame = read_parquet(folder, max_files=5)
+frame.drop(['upload_time', 'system_id'], inplace=True, axis=1)
+
+# from seaborn import load_dataset
+# frame = load_dataset('titanic')
+csl = ContrastSetLearner(frame, 'account')
+
+import json
+json.dump(csl.metadata, open('test.json', 'w'), indent=4)
+# csl.learn()
