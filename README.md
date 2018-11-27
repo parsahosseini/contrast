@@ -63,12 +63,13 @@ is the next phase in contrast-set learning. Here, rule abundance across groups
 is modeled as a 2 x 2 contingency matrix made of our rule, `A`, and a group 
 state, `B`. We denote "not" symbol as `~`:
 
-```python
-|    | B        | ~B        |
-|----|----------|-----------|
-| A  | p(A, B)  | p(A, ~B)  |
-| ~A | p(~A, B) | p(~A, ~B) |
+```markdown
+| B | ~B |
+|:--- |     :---:      |          ---: |
+| A   | p(A, B)     | p(A, ~B)    |
+| ~A  | p(~A, B)    | p(~A, ~B)      |
 ```
+
 
 Given our symbol representation, we denote our statistical metrics:
 * Support `p(A, B)`
