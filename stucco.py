@@ -235,8 +235,6 @@ class ContrastSetLearner:
         counts = dummy_frame.groupby(list(dummy_frame.columns)).size()
         logging.info('Number of records (post-index): {}'.format(len(counts)))
 
-        # print(counts)
-
         # data is list containing the items, its group, and count
         self.data = counts.reset_index(name='count').to_dict(orient='records')
         self.group = group_feature  # feature to contrast, aka. column name
@@ -369,13 +367,16 @@ class ContrastSetLearner:
         # read the metadata and map group-states to their column number
         states = self.metadata['features'][self.group]
         state_positions = {self.metadata['states'][s]['pos']: s for s in states}
+        logging.info('Number of group states: {}'.format(len(states)))
 
         # for storing all the statistically significant rules
         data = []
 
         # iterate over all rules and their contingency matrix
+        logging.info('Scoring rules and their contingency matrices')
         for rule in list(self.counts):
             contingency_matrix = self.counts[rule]
+            logging.debug('Processing rule {}'.format(rule))
 
             # for each group (column), extract-out all other columns
             for col_num in range(np.shape(contingency_matrix)[1]):
@@ -387,6 +388,7 @@ class ContrastSetLearner:
 
                 # join current and not-columns to give 2 x 2 contingency matrix
                 two_by_two = np.hstack((this_column, not_column_sum))
+                logging.debug('{}'.format(two_by_two.tolist()))
 
                 # skip if rule difference across groups is not large
                 if abs(np.subtract(*two_by_two[0])) <= min_difference:
@@ -411,22 +413,10 @@ class ContrastSetLearner:
                     group = state_positions[col_num]
                     row = {'rule': rule, 'group': group, 'lift': lift_out}
                     data.append(row)
+                    logging.info('Good rule: {}'.format(row))
 
         # save the resulting rules to a DataFrame and sort by lift
         frame = pd.DataFrame(data)
         if len(frame) > 0:
             frame.sort_values('lift', ascending=False, inplace=True)
         return frame
-
-
-folder = '/Users/parsahosseini/data/'
-frame = read_parquet(folder, max_files=5)
-frame.drop(['upload_time', 'system_id'], inplace=True, axis=1)
-
-# from seaborn import load_dataset
-# frame = load_dataset('titanic')
-csl = ContrastSetLearner(frame, 'account')
-
-import json
-json.dump(csl.metadata, open('test.json', 'w'), indent=4)
-# csl.learn()
