@@ -139,12 +139,12 @@ class ContrastSetLearner:
         KeyError: if `group_feature` does not exist as a valid feature name.
     """
     def __init__(self, frame, group_feature, num_parts=3, max_unique_reals=15,
-                 sep='=>', max_rows=None):
+                 sep='=>', max_rows=None, min_unique_objects=2):
 
         try:
             # test that the group feature exists as a column
             frame[group_feature]
-            logging.info("Feature set to {}".format(group_feature))
+            logging.info("User-defined feature is '{}'".format(group_feature))
         except KeyError:
             logging.error("`group_feature` must be a valid feature name.")
             raise
@@ -155,7 +155,9 @@ class ContrastSetLearner:
 
         # if so-many rows are desired, select those-many rows
         if max_rows:
+            logging.debug('Selecting the top {:,} rows'.format(max_rows))
             frame = pd.DataFrame(frame.iloc[:max_rows])
+        logging.info("Data dimensions: {:,} x {:,}".format(*frame.shape))
 
         # retrieve discrete features, i.e. categorical and boolean, as object
         subset = frame.select_dtypes(['category', 'bool', 'object'])
@@ -166,27 +168,31 @@ class ContrastSetLearner:
         for col in subset.columns:
 
             # remove all features which only have one value; low quality
-            if len(subset[col].unique()) == 1:
+            if len(subset[col].unique()) <= min_unique_objects:
                 bad_cols.append(col)
+                logging.debug("'{}' lacks enough objects; skipping".format(col))
                 continue
+            logging.debug("Discretizing type-object feature: '{}'".format(col))
             frame[col] = col + sep + subset[col].astype(str)
 
         # retrieve continuous features, i.e. float and int, as number
         subset = frame.select_dtypes(['number'])
+        logging.info('Reading numeric features (n={})'.format(subset.shape[1]))
         subset = subset.fillna(0)
 
         # repeat the appending process above, but for real-values
-        logging.info('Reading numeric features (n={})'.format(subset.shape[1]))
         for col in subset.columns:
             series = subset[col]
-            arr = series.sort_values().unique()
+            arr = list(series.sort_values().unique())
 
-            # remove all features which only have one value; low quality
-            if len(arr) == 1:
+            # remove all features which only at most two values; low quality
+            if len(arr) <= 2:
                 bad_cols.append(col)
+                logging.debug('{} lacks enough reals; skipping'.format(col))
                 continue
 
             # if numeric feature has many unique values, partition into chunks
+            logging.debug('{}; {:,} unique items'.format(col, len(arr)))
             if len(arr) > max_unique_reals:
 
                 # if there are so-few unique places, only make 1 partition
@@ -202,19 +208,24 @@ class ContrastSetLearner:
                 # determine which (lower, upper) range this value falls into
                 series = series.apply(lambda x: values[bisect_right(lwr, x)-1])
                 frame[col] = col + sep + series.astype(str)
-                logging.info('{} is continuous; parts: {}'.format(col, values))
+                logging.info("'{}' partitions: {}".format(col, values))
 
             # if numeric feature has few unique values, append it like object
             else:
+                logging.info("'{}' is discrete; parts: {}".format(col, arr))
                 frame[col] = col + sep + subset[col].astype(str)
 
-        logging.info('Dropping low-quality features and creating metadata')
-        metadata = {}
+        logging.info("{:,} features lack value; dropping".format(len(bad_cols)))
         frame.drop(bad_cols, axis=1, inplace=True)
+        logging.info("New data dimensions: {:,} x {:,}".format(*frame.shape))
+
+        metadata = {}
+        logging.debug("Creating metadata data-structure")
         for col in frame:
 
             # add all the states pointing to their features to the metadata
             states = list(frame[col].unique())
+            logging.debug("'{}' has {:,} states".format(col, len(states)))
             for ix, state in enumerate(states):
                 element = {state: {'pos': ix, 'feature': col}}
                 metadata.setdefault('states', {}).update(element)
@@ -225,7 +236,7 @@ class ContrastSetLearner:
         self.metadata = metadata
 
         # get the contrast group, remove from frame, and make items as one list
-        logging.info('Number of records (pre-index): {}'.format(len(frame)))
+        logging.info('Number of data rows (pre-index): {:,}'.format(len(frame)))
         group_values = pd.Series(frame[group_feature])
         frame.drop(group_feature, axis=1, inplace=True)
         items = pd.Series(frame.apply(lambda x: tuple(x), axis=1), name='items')
@@ -233,12 +244,13 @@ class ContrastSetLearner:
         # merge group values and items as DataFrame, and count their frequency
         dummy_frame = pd.concat([group_values, items], axis=1)
         counts = dummy_frame.groupby(list(dummy_frame.columns)).size()
-        logging.info('Number of records (post-index): {}'.format(len(counts)))
+        logging.info('Number of data rows (indexed): {:,}'.format(len(counts)))
 
         # data is list containing the items, its group, and count
         self.data = counts.reset_index(name='count').to_dict(orient='records')
         self.group = group_feature  # feature to contrast, aka. column name
         self.counts = {}
+        logging.info("Instantiation complete. Ready for learning and scoring.")
 
     def learn(self, max_length=3, max_records=None, shuffle=True, seed=None):
         """
@@ -267,7 +279,7 @@ class ContrastSetLearner:
         num_states = len(self.metadata['features'][self.group])
 
         # we intend, in this block, to compute counts for the rule across groups
-        logging.info('Enumerating rules across group-states...')
+        logging.info('Enumerating {:,} item-sets'.format(len(self.data)))
         for row_num, rec in enumerate(self.data):
             state, items, count = rec[self.group], rec['items'],rec['count']
             logging.debug("Item-set record {}: {}".format(row_num, items))
@@ -283,10 +295,10 @@ class ContrastSetLearner:
                 # get columnar position of the group state and update matrix
                 pos = self.metadata['states'][state]['pos']
                 contingency_matrix[0][pos] += count
+        logging.info("{:,} contingency matrices made".format(len(self.counts)))
 
         # compute the counts for the not-rule
-        logging.info('Enumerating not-rules across group-states...')
-        for rule in self.counts:
+        for row_num, rule in enumerate(self.counts):
 
             # given rule, compute all not-rules possibilities
             rule_negations = self.get_rule_negations(rule)
@@ -374,7 +386,7 @@ class ContrastSetLearner:
 
         # iterate over all rules and their contingency matrix
         logging.info('Scoring rules and their contingency matrices')
-        for rule in list(self.counts):
+        for i, rule in enumerate(self.counts):
             contingency_matrix = self.counts[rule]
             logging.debug('Processing rule {}'.format(rule))
 
@@ -413,7 +425,7 @@ class ContrastSetLearner:
                     group = state_positions[col_num]
                     row = {'rule': rule, 'group': group, 'lift': lift_out}
                     data.append(row)
-                    logging.info('Good rule: {}'.format(row))
+                    logging.info('{} / {}: {}'.format(i, len(self.counts), row))
 
         # save the resulting rules to a DataFrame and sort by lift
         frame = pd.DataFrame(data)
