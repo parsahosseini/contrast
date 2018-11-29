@@ -166,12 +166,14 @@ class ContrastSetLearner:
         # append the feature to its attribute, making it attribute := value
         bad_cols = []
         for col in subset.columns:
+            unique_objs = list(subset[col].unique())
 
-            # remove all features which only have one value; low quality
-            if len(subset[col].unique()) <= min_unique_objects:
+            # remove all features which few unique items; low quality
+            if len(unique_objs) < min_unique_objects:
                 bad_cols.append(col)
-                logging.debug("'{}' lacks enough objects; skipping".format(col))
+                logging.debug("'{}' lacks objects: {}".format(col, unique_objs))
                 continue
+
             logging.debug("Discretizing type-object feature: '{}'".format(col))
             frame[col] = col + sep + subset[col].astype(str)
 
@@ -235,22 +237,28 @@ class ContrastSetLearner:
         metadata.update({'group_feature': group_feature, 'shape': frame.shape})
         self.metadata = metadata
 
-        # get the contrast group, remove from frame, and make items as one list
-        logging.info('Number of data rows (pre-index): {:,}'.format(len(frame)))
-        group_values = pd.Series(frame[group_feature])
-        frame.drop(group_feature, axis=1, inplace=True)
-        items = pd.Series(frame.apply(lambda x: tuple(x), axis=1), name='items')
+        try:
+            # get the contrast group, remove from frame, and make items as list
+            logging.info('Record count (pre-index): {:,}'.format(len(frame)))
+            group_values = pd.Series(frame[group_feature])
+            frame.drop(group_feature, axis=1, inplace=True)
 
-        # merge group values and items as DataFrame, and count their frequency
-        dummy_frame = pd.concat([group_values, items], axis=1)
-        counts = dummy_frame.groupby(list(dummy_frame.columns)).size()
-        logging.info('Number of data rows (indexed): {:,}'.format(len(counts)))
+            # merge all features into series; throw exception if no items exist
+            items = pd.Series(frame.apply(lambda x: tuple(x), 1), name='items')
+            if all(items.isna()):
+                raise ValueError("No items; revise parameter values.")
 
-        # data is list containing the items, its group, and count
-        self.data = counts.reset_index(name='count').to_dict(orient='records')
-        self.group = group_feature  # feature to contrast, aka. column name
-        self.counts = {}
-        logging.info("Instantiation complete. Ready for learning and scoring.")
+            # merge group values and items as DataFrame, and count frequency
+            dummy_frame = pd.concat([group_values, items], axis=1)
+            counts = dummy_frame.groupby(list(dummy_frame.columns)).size()
+            logging.info('Record count (index): {:,}'.format(len(counts)))
+
+            # data is list containing the items, its group, and count
+            self.data = counts.reset_index(name='count').to_dict('records')
+            self.group = group_feature  # feature to contrast, aka. column name
+            self.counts = {}
+        except ValueError as e:
+            logging.error(e)
 
     def learn(self, max_length=3, max_records=None, shuffle=True, seed=None):
         """
@@ -279,13 +287,14 @@ class ContrastSetLearner:
         num_states = len(self.metadata['features'][self.group])
 
         # we intend, in this block, to compute counts for the rule across groups
-        logging.info('Enumerating {:,} item-sets'.format(len(self.data)))
-        for row_num, rec in enumerate(self.data):
+        logging.info("Enumerating {:,} item-sets, i".format(len(self.data)))
+        for i, rec in enumerate(self.data):
             state, items, count = rec[self.group], rec['items'],rec['count']
-            logging.debug("Item-set record {}: {}".format(row_num, items))
+            if i % 200 == 0:
+                logging.info("i={}; n(matrix)={:,}".format(i, len(self.counts)))
 
             for rule in canonical_combination(items, max_length):
-                logging.debug('Rule and state: {}, {}'.format(rule, state))
+                logging.debug('i={}; rule={}; state={}'.format(i, rule, state))
                 if rule not in self.counts:
                     self.counts[rule] = np.zeros((2, num_states))
 
@@ -298,7 +307,9 @@ class ContrastSetLearner:
         logging.info("{:,} contingency matrices made".format(len(self.counts)))
 
         # compute the counts for the not-rule
-        for row_num, rule in enumerate(self.counts):
+        for i, rule in enumerate(self.counts):
+            if i % 2500 == 0:
+                logging.info("i={} matrix not-rules enumerated".format(i))
 
             # given rule, compute all not-rules possibilities
             rule_negations = self.get_rule_negations(rule)
