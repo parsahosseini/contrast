@@ -83,7 +83,7 @@ def confidence(arr):
     Returns:
         float: confidence score; ranges from 0 to 1.
     """
-    count = arr[0, 0]
+    count = arr[0][0]
     return max(count / arr[0, :].sum(), count / arr[:, 0].sum())
 
 
@@ -109,10 +109,10 @@ def read_parquet(folder, max_files=None):
             frame = pd.read_parquet(file)
 
             # break file ingestion when so-many files are read-in
-            if len(data) < max_files:
-                data.append(frame)
-            else:
+            if len(data) == max_files:
                 break
+            else:
+                data.append(frame)
 
     # return output as a pandas DataFrame.
     output = pd.concat(data)
