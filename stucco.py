@@ -139,7 +139,8 @@ class ContrastSetLearner:
         KeyError: if `group_feature` does not exist as a valid feature name.
     """
     def __init__(self, frame, group_feature, num_parts=3, max_unique_reals=15,
-                 sep='=>', max_rows=None, min_unique_objects=2):
+                 sep='=>', max_rows=None, min_unique_objects=2,
+                 max_real_bias=0.6):
 
         try:
             # test that the group feature exists as a column
@@ -186,11 +187,11 @@ class ContrastSetLearner:
         for col in subset.columns:
             series = subset[col]
             arr = list(series.sort_values().unique())
+            max_bias = series.value_counts(normalize=True).max()
 
-            # remove all features which only at most two values; low quality
-            if len(arr) <= 2:
+            # remove all features which have values with a high frequency bias
+            if max_bias > max_real_bias:
                 bad_cols.append(col)
-                logging.debug('{} lacks enough reals; skipping'.format(col))
                 continue
 
             # if numeric feature has many unique values, partition into chunks
@@ -210,11 +211,9 @@ class ContrastSetLearner:
                 # determine which (lower, upper) range this value falls into
                 series = series.apply(lambda x: values[bisect_right(lwr, x)-1])
                 frame[col] = col + sep + series.astype(str)
-                logging.info("'{}' partitions: {}".format(col, values))
 
             # if numeric feature has few unique values, append it like object
             else:
-                logging.info("'{}' is discrete; parts: {}".format(col, arr))
                 frame[col] = col + sep + subset[col].astype(str)
 
         logging.info("{:,} features lack value; dropping".format(len(bad_cols)))
@@ -260,7 +259,7 @@ class ContrastSetLearner:
         except ValueError as e:
             logging.error(e)
 
-    def learn(self, max_length=3, max_records=None, shuffle=True, seed=None):
+    def learn(self, max_length=2, max_records=None, max_contingency_matrix=None):
         """
         Produces a data-structure that references rule counts across all
         possible groups. Such logic is also applied to the not-rule, allowing
@@ -276,10 +275,6 @@ class ContrastSetLearner:
             int: number of rules that were generated
         """
 
-        if shuffle:
-            rng = np.random.RandomState(seed)
-            rng.shuffle(self.data)
-
         if max_records:
             self.data = self.data[:max_records]
 
@@ -288,6 +283,7 @@ class ContrastSetLearner:
 
         # we intend, in this block, to compute counts for the rule across groups
         logging.info("Enumerating {:,} item-sets, i".format(len(self.data)))
+        stop_learning = False
         for i, rec in enumerate(self.data):
             state, items, count = rec[self.group], rec['items'],rec['count']
             if i % 200 == 0:
@@ -297,6 +293,8 @@ class ContrastSetLearner:
                 logging.debug('i={}; rule={}; state={}'.format(i, rule, state))
                 if rule not in self.counts:
                     self.counts[rule] = np.zeros((2, num_states))
+                    if len(self.counts) == max_contingency_matrix:
+                        stop_learning = True
 
                 # update the rule (row 0) count given the column index of state
                 contingency_matrix = self.counts[rule]
@@ -304,6 +302,8 @@ class ContrastSetLearner:
                 # get columnar position of the group state and update matrix
                 pos = self.metadata['states'][state]['pos']
                 contingency_matrix[0][pos] += count
+            if stop_learning:
+                break
         logging.info("{:,} contingency matrices made".format(len(self.counts)))
 
         # compute the counts for the not-rule
